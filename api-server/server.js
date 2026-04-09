@@ -52,7 +52,7 @@ app.post('/create-payment', async (req, res) => {
         type: 'redirect',
         return_url: returnUrl || 'https://folder887.github.io/?payment=success',
       },
-      description: description || 'Заказ FOLDER',
+      description: (description || 'Заказ FOLDER').slice(0, 128),
       capture: true,
     }),
   });
