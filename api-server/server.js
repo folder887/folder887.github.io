@@ -70,6 +70,21 @@ app.post('/create-payment', async (req, res) => {
   });
 });
 
+app.get('/check-payment/:id', async (req, res) => {
+  const shopId    = process.env.YOOKASSA_SHOP_ID;
+  const secretKey = process.env.YOOKASSA_SECRET_KEY;
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  const response = await fetch(`https://api.yookassa.ru/v3/payments/${req.params.id}`, {
+    headers: {
+      'Authorization': 'Basic ' + Buffer.from(`${shopId}:${secretKey}`).toString('base64'),
+    },
+  });
+
+  const data = await response.json();
+  return res.json({ status: data.status }); // succeeded | canceled | pending | waiting_for_capture
+});
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 3000;

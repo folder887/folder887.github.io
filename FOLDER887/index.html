@@ -2372,18 +2372,35 @@
     }
 
     // Handle return from SberPay
-    (function handleSberPayReturn() {
+    (async function handleSberPayReturn() {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('payment') === 'success') {
-        const pending = JSON.parse(localStorage.getItem('folder_pending_payment') || 'null');
-        if (pending) {
-          cart = [];
-          saveCart();
+      if (params.get('payment') !== 'success') return;
+      history.replaceState({}, '', window.location.pathname);
+
+      const pending = JSON.parse(localStorage.getItem('folder_pending_payment') || 'null');
+      if (!pending || !pending.paymentId) return;
+
+      try {
+        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+          ? 'http://localhost:3000'
+          : 'https://folder887-github-io.onrender.com';
+        const resp = await fetch(`${API_URL}/check-payment/${pending.paymentId}`);
+        const data = await resp.json();
+
+        if (data.status === 'succeeded' || data.status === 'waiting_for_capture') {
+          cart = []; saveCart();
           localStorage.removeItem('folder_pending_payment');
           updateCartBadge();
-          history.replaceState({}, '', window.location.pathname);
           showPaySuccess(pending.total);
+        } else {
+          // canceled or pending — просто убираем pending без показа успеха
+          if (data.status === 'canceled') {
+            localStorage.removeItem('folder_pending_payment');
+          }
         }
+      } catch(e) {
+        // сеть недоступна — не показываем ничего
+        localStorage.removeItem('folder_pending_payment');
       }
     })();
 
