@@ -1,0 +1,82 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: paycore-processing
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/paycore}
+    username: ${SPRING_DATASOURCE_USERNAME:paycore}
+    password: ${SPRING_DATASOURCE_PASSWORD:secret}
+    hikari:
+      maximum-pool-size: 30   # Higher than gateway — this is where DB work happens
+      minimum-idle: 10
+      connection-timeout: 2000
+      lock-timeout: 500       # FOR UPDATE NOWAIT fallback
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+
+  flyway:
+    enabled: false  # Only gateway service runs migrations
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      group-id: paycore-processing
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "ru.paycore.*"
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: ru.paycore.processing.infrastructure.kafka.dto.AuthorizeCommand
+        max.poll.records: 50
+        max.poll.interval.ms: 30000
+        session.timeout.ms: 10000
+        fetch.min.bytes: 1
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+    listener:
+      ack-mode: BATCH
+      concurrency: 6
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,metrics
+  metrics:
+    tags:
+      service: paycore-processing
+
+paycore:
+  processing:
+    fraud-timeout-ms: 80    # < 80ms timeout for fraud check
+    auth-timeout-ms: 200    # < 200ms for authorization step
+    # INTERNAL = use own ledger (sandbox, no license needed)
+    # ACQUIRER  = forward to real acquirer (YooKassa/Tinkoff)
+    mode: ${PAYCORE_PROCESSING_MODE:INTERNAL}
+
+  acquirer:
+    yookassa:
+      enabled: ${YOOKASSA_ENABLED:false}
+      shop-id: ${YOOKASSA_SHOP_ID:100500}
+      secret-key: ${YOOKASSA_SECRET_KEY:test_placeholder}
+      base-url: ${YOOKASSA_BASE_URL:https://api.yookassa.ru/v3}
+
+    tinkoff:
+      enabled: ${TINKOFF_ENABLED:false}
+      terminal-key: ${TINKOFF_TERMINAL_KEY:TinkoffBankTest}
+      secret-key: ${TINKOFF_SECRET_KEY:TinkoffBankTest}
+      base-url: ${TINKOFF_BASE_URL:https://securepay.tinkoff.ru/v2}

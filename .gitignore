@@ -1,0 +1,33 @@
+# Environment — never commit real secrets
+.env
+*.env.local
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Node
+node_modules/
+npm-debug.log*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes / data
+db/data/
+infra/data/
+
+# Claude internal
+.claude/

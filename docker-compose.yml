@@ -1,0 +1,287 @@
+version: "3.9"
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: paycore-postgres
+    environment:
+      POSTGRES_DB: paycore
+      POSTGRES_USER: paycore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paycore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - paycore
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: paycore-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: kafka-topics --bootstrap-server kafka:9092 --list
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - paycore
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: paycore-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.commands        --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.commands.RETRY  --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.commands.DLT    --partitions 6  --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.replies         --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.fraud.requests  --partitions 6  --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.fraud.checked   --partitions 6  --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.authorized      --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.captured        --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.settled         --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic payment.reversed        --partitions 12 --replication-factor 1 --config retention.ms=604800000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic settlement.batch        --partitions 4  --replication-factor 1 --config retention.ms=2592000000 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic audit.events            --partitions 6  --replication-factor 1 --config retention.ms=2592000000 &&
+        echo 'All topics created successfully'
+      "
+    networks:
+      - paycore
+
+  redis:
+    image: redis:7-alpine
+    container_name: paycore-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-secret} --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-secret}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - paycore
+
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: paycore-vault
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN:-root}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "VAULT_ADDR=http://127.0.0.1:8200 vault status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - paycore
+
+  # ─── Observability ────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: paycore-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    networks:
+      - paycore
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: paycore-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - paycore
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    container_name: paycore-jaeger
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - paycore
+
+  # ─── Services ─────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: paycore-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/paycore
+      SPRING_DATASOURCE_USERNAME: paycore
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD:-secret}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8080:8080"
+    networks:
+      - paycore
+
+  processing:
+    build:
+      context: .
+      dockerfile: services/processing/Dockerfile
+    container_name: paycore-processing
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/paycore
+      SPRING_DATASOURCE_USERNAME: paycore
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PAYCORE_FRAUD_URL: http://fraud:8084
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      PAYCORE_PROCESSING_MODE: ACQUIRER
+      YOOKASSA_ENABLED: "true"
+      YOOKASSA_SHOP_ID: "1323125"
+      YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
+      YOOKASSA_BASE_URL: https://api.yookassa.ru/v3
+      TINKOFF_ENABLED: "true"
+      TINKOFF_TERMINAL_KEY: TinkoffBankTest
+      TINKOFF_SECRET_KEY: TinkoffBankTest
+      TINKOFF_BASE_URL: https://securepay.tinkoff.ru/v2
+    ports:
+      - "8081:8081"
+    networks:
+      - paycore
+
+  settlement:
+    build:
+      context: .
+      dockerfile: services/settlement/Dockerfile
+    container_name: paycore-settlement
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/paycore
+      SPRING_DATASOURCE_USERNAME: paycore
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-root}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8082:8082"
+    networks:
+      - paycore
+
+  router:
+    build:
+      context: .
+      dockerfile: services/router/Dockerfile
+    container_name: paycore-router
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-secret}
+      PROCESSING_ADDR: processing:8081
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8083:8083"
+    networks:
+      - paycore
+
+  fraud:
+    build:
+      context: .
+      dockerfile: services/fraud/Dockerfile
+    container_name: paycore-fraud
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # pydantic-settings uses FRAUD_ prefix
+      FRAUD_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FRAUD_REDIS_URL: redis://:${REDIS_PASSWORD:-secret}@redis:6379/0
+      FRAUD_OTEL_ENDPOINT: http://jaeger:4318
+      FRAUD_LOG_JSON: "true"
+    ports:
+      - "8084:8084"
+    networks:
+      - paycore
+
+volumes:
+  postgres_data:
+  kafka_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  paycore:
+    driver: bridge

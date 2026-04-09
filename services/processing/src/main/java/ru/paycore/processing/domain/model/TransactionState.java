@@ -1,0 +1,21 @@
+package ru.paycore.processing.domain.model;
+
+public enum TransactionState {
+    PENDING,
+    FRAUD_CHECKING,
+    FRAUD_CHECKED,
+    AUTHORIZING,
+    AUTHORIZED,
+    CAPTURING,
+    CAPTURED,
+    SETTLEMENT_QUEUED,
+    SETTLED,
+    REVERSING,
+    REVERSED,
+    DECLINED_FRAUD,
+    DECLINED_INSUFFICIENT_FUNDS,
+    DECLINED_BLOCKED,
+    DECLINED_PROCESSOR_ERROR,
+    DECLINED_LIMIT_EXCEEDED,
+    EXPIRED
+}

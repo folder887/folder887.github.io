@@ -1,0 +1,13 @@
+{
+  "outputDirectory": "FOLDER887",
+  "functions": {
+    "api/create-payment.js": {
+      "memory": 128,
+      "maxDuration": 10
+    }
+  },
+  "env": {
+    "YOOKASSA_SHOP_ID": "@yookassa_shop_id",
+    "YOOKASSA_SECRET_KEY": "@yookassa_secret_key"
+  }
+}
